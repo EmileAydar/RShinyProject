@@ -1,0 +1,13 @@
+name: SNCF_13
+title: SNCF_13
+username:
+account: superhomme
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 8662042
+bundleId: 7042464
+url: https://superhomme.shinyapps.io/SNCF_13/
+when: 1680522935.12688
+lastSyncTime: 1680522935.12689
+asMultiple: FALSE
+asStatic: FALSE
