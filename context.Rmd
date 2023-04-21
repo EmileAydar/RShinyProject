@@ -1,0 +1,308 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Context: analyse the dataset
+
+## read the file
+
+第一个难题，出发返回是provence，延迟是车站
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(readxl)
+# 读取数据
+arrival <- read.csv("railway_delays/Arrival.csv")
+delay <- read.csv("railway_delays/Delay.csv")
+departure <- read.csv("railway_delays/Departure.csv")
+select_gares <- read_excel("railway_delays/select_gares.xlsx")
+
+
+# 修改 arrival 和 departure 数据集的列名
+names(arrival) <- c("Origin", "Destination", "Train", "Number", "Date", "Scheduled_Arrival", "Real_Arrival", "Delay", "Cause", "Stops")
+names(departure) <- c("Origin", "Destination", "Train", "Number", "Date", "Scheduled_Departure", "Real_Departure", "Delay", "Cause", "Stops")
+
+# 修改 delay 数据集的列名
+names(delay) <- c("Date", "Origin", "Destination", "Real_Arrival", "Scheduled_Arrival", "Scheduled_Departure", "Delay", "cause")
+
+# 使用 bind_rows() 函数合并 arrival 和 departure 数据集
+all_trains <- bind_rows(arrival, departure)
+
+# 使用 left_join() 函数将 delay 表格与 all_trains 表格合并
+all_trains <- all_trains %>%
+  left_join(delay, by = c("Origin", "Destination", "Date"))
+
+# 合并 Delay.x 和 Delay.y
+all_trains <- all_trains %>%
+  mutate(Delay = ifelse(is.na(Delay.x), Delay.y, Delay.x)) %>%
+  select(-Delay.x, -Delay.y, -cause)
+
+# 合并 Real_Arrival.x 和 Real_Arrival.y
+all_trains <- all_trains %>%
+  mutate(Real_Arrival = ifelse(is.na(Real_Arrival.x), Real_Arrival.y, Real_Arrival.x)) %>%
+  select(-Real_Arrival.x, -Real_Arrival.y)
+
+# 合并 Scheduled_Arrival.x 和 Scheduled_Arrival.y
+all_trains <- all_trains %>%
+  mutate(Scheduled_Arrival = ifelse(is.na(Scheduled_Arrival.x), Scheduled_Arrival.y, Scheduled_Arrival.x)) %>%
+  select(-Scheduled_Arrival.x, -Scheduled_Arrival.y)
+
+# 合并 Scheduled_Departure.x 和 Scheduled_Departure.y
+all_trains <- all_trains %>%
+  mutate(Scheduled_Departure = ifelse(is.na(Scheduled_Departure.x), Scheduled_Departure.y, Scheduled_Departure.x)) %>%
+  select(-Scheduled_Departure.x, -Scheduled_Departure.y)
+
+# 更新列名
+names(all_trains)
+```
+
+## 提取分析一下要做的事
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+
+# 1. 获取不重复的 Origin 和 Destination
+
+origins_destinations <- all_trains %>%
+  mutate(Origin = trimws(Origin),
+         Destination = trimws(Destination)) %>%
+  select(Origin, Destination) %>%
+  gather() %>%
+  distinct(value) %>% 
+  filter(nchar(value) <= 50) %>% 
+  arrange(value) %>% 
+  pull(value)
+
+# 2. 获取不重复的车型
+train_types <- unique(all_trains$Train)
+
+# 3. 将所有涉及的时间归结到一个小时一个小时的，并获取不重复的时间点
+all_trains <- all_trains %>%
+  mutate(Scheduled_Arrival = as.POSIXct(Scheduled_Arrival, format = "%H:%M"),
+         Scheduled_Departure = as.POSIXct(Scheduled_Departure, format = "%H:%M"),
+         Scheduled_Arrival_hour = hour(Scheduled_Arrival),
+         Scheduled_Departure_hour = hour(Scheduled_Departure))
+
+hours <- sort(unique(c(all_trains$Scheduled_Arrival_hour, all_trains$Scheduled_Departure_hour)))
+
+hours <- sort(unique(c(all_trains$Scheduled_Arrival_hour, all_trains$Scheduled_Departure_hour)))
+
+# 4. 获取途径车站数量的不重复值
+all_trains <- all_trains %>%
+  mutate(Stops = sapply(strsplit(gsub("\\[|\\]|'|‘|’", "", Stops), split = ", "), length))
+
+stop_counts <- sort(unique(na.omit(all_trains$Stops)))
+
+
+new_data <- all_trains %>%
+  select(Scheduled_Arrival_hour, Stops, Train, Delay)
+
+# 将 Scheduled_Arrival_hour 列名重命名为 hour
+names(new_data)[names(new_data) == "Scheduled_Arrival_hour"] <- "hour"
+
+all_trains
+```
+
+分析晚点时间历史数据
+
+```{r}
+library(dplyr)
+
+# 计算总的延迟时间
+total_delay <- all_trains %>%
+  summarize(min_delay = min(Delay, na.rm = TRUE),
+            max_delay = max(Delay, na.rm = TRUE),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+total_delay
+
+```
+
+分析SNCF统计是否准确
+
+```{r}
+library(dplyr)
+
+# 计算预测时间的准确性
+all_trains <- all_trains %>%
+  mutate(Scheduled_Arrival = as.POSIXct(Scheduled_Arrival, format = "%H:%M:%S"),
+         Real_Arrival = as.POSIXct(Real_Arrival, format = "%H:%M:%S"),
+         Scheduled_Departure = as.POSIXct(Scheduled_Departure, format = "%H:%M:%S"))
+
+
+
+mae_arrival <- mean(all_trains$absolute_error_arrival, na.rm = TRUE)
+mae_departure <- mean(all_trains$absolute_error_departure, na.rm = TRUE)
+
+mae_arrival
+mae_departure
+
+```
+
+使用决策树对是否晚点进行预测
+
+```{r}
+# 加载所需库
+library(rpart)
+library(rpart.plot)
+
+new_data
+
+# 预处理数据
+new_data$IsDelayed <- as.factor(ifelse(new_data$Delay > 0, 1, 0))
+
+# 拟合决策树模型，调整参数
+tree_model <- rpart(IsDelayed ~ Stops + Train + hour, data = new_data, method = "class",
+                    control = rpart.control(minsplit = 1, maxdepth = 10, cp = 0.001))
+
+# 可视化决策树
+rpart.plot(tree_model, type = 3, box.palette = "RdBu", shadow.col = "gray", nn = TRUE)
+
+
+
+```
+
+使用决策树\
+
+```{r}
+new_observation <- data.frame(
+  Stops = c(3),
+  Train = factor(c("TGV INOUI"), levels = levels(new_data$Train)),
+  hour = c(17)
+)
+
+# 使用决策树模型预测新观测值
+prediction_prob <- predict(tree_model, new_observation, type = "prob")
+predicted_class <- predict(tree_model, new_observation, type = "class")
+
+# 输出预测结果
+cat("\ndelay or not（0 = on time，1 = delay）：\n")
+cat("Probability：\n")
+print(prediction_prob)
+
+```
+
+```{r}
+
+
+
+
+# 分析1: 延迟列车的统计信息
+delay_summary <- delay %>%
+  summarise(count = n(),
+            mean_delay = mean(Retard..min.),
+            min_delay = min(Retard..min.),
+            max_delay = max(Retard..min.))
+
+# 分析2: 延迟与列车类型的关系
+delay_by_train_type <- all_trains %>%
+  group_by(Train) %>%
+  summarise(count = n(),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+# 可视化1
+ggplot(delay_by_train_type, aes(x = Train, y = mean_delay)) +
+  geom_col() +
+  labs(title = "平均延迟时间与列车类型的关系",
+       x = "列车类型",
+       y = "平均延迟时间（分钟）") +
+  theme(axis.text.x = element_text(size = 8))
+
+# 分析3: 延迟与始发站的关系
+delay_by_origin_station <- all_trains %>%
+  group_by(Origin) %>%
+  summarise(count = n(),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+# 可视化2: 延迟与始发站的关系
+ggplot(delay_by_origin_station, aes(x = reorder(Origin, mean_delay), y = mean_delay)) +
+  geom_point() +
+  labs(title = "平均延迟时间与始发站的关系",
+       x = "始发站",
+       y = "平均延迟时间（分钟）") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8))
+
+
+# 分析4: 延迟与出发/到达时间的关系
+all_trains$hour <- as.numeric(substr(all_trains$Real_Arrival, 1, 2))
+delay_by_hour <- all_trains %>%
+  group_by(hour) %>%
+  summarise(count = n(),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+
+# 可视化3
+ggplot(delay_by_hour, aes(x = hour, y = mean_delay)) +
+  geom_col() +
+  labs(title = "平均延迟时间与小时的关系",
+       x = "小时",
+       y = "平均延迟时间（分钟）")
+
+# 分析5: 延迟与沿途停靠站的关系
+all_trains$num_stops <- sapply(strsplit(all_trains$Stops, ","), length)
+delay_by_stops <- all_trains %>%
+  group_by(num_stops) %>%
+  summarise(count = n(),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+# 可视化4
+ggplot(delay_by_stops, aes(x = num_stops, y = mean_delay)) +
+  geom_col() +
+  labs(title = "平均延迟时间与沿途停靠站的关系",
+       x = "沿途停靠站数量",
+       y = "平均延迟时间（分钟）")
+
+```
+
+```{r}
+library(rpart)
+
+# 假设你的数据框名为 all_trains
+# 将 Origin 和 Destination 列转换为因子类型
+all_trains$Origin <- as.factor(all_trains$Origin)
+all_trains$Destination <- as.factor(all_trains$Destination)
+
+# 创建独热编码（哑变量）的数据框
+all_trains_encoded <- model.matrix(~ . - 1, data = all_trains[, c("Origin", "Destination")])
+
+# 将独热编码的数据框转换为数据框
+all_trains_encoded <- as.data.frame(all_trains_encoded)
+
+# 添加 'Delay' 列到独热编码的数据框中
+all_trains_encoded$Delay <- all_trains$Delay
+
+# 将数据分为训练集和测试集（这里使用 80% 的数据作为训练集，20% 作为测试集）
+set.seed(123)
+train_idx <- sample(1:nrow(all_trains_encoded), 0.8 * nrow(all_trains_encoded))
+train_data <- all_trains_encoded[train_idx,]
+test_data <- all_trains_encoded[-train_idx,]
+
+# 训练决策树模型
+model <- rpart(Delay ~ ., data = train_data, method = "anova")
+
+# 预测测试集的延迟时间
+predictions <- predict(model, test_data)
+
+# 计算 RMSE（均方根误差）
+rmse <- sqrt(mean((predictions - test_data$Delay)^2))
+
+
+```
+
+```{r}
+# 安装 rpart.plot 包（如果你还没有安装的话）
+if (!requireNamespace("rpart.plot", quietly = TRUE)) {
+  install.packages("rpart.plot")
+}
+
+# 加载 rpart.plot 包
+library(rpart.plot)
+
+# 可视化决策树模型
+prp(model, type = 0, extra = 1, main = "Decision Tree")
+
+```

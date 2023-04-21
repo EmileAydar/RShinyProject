@@ -2,19 +2,27 @@
 title: "SNCF_13"
 output: 
   flexdashboard::flex_dashboard:
-    orientation: columns
+    orientation: rows
     vertical_layout: fill
-    theme: default
+    theme: cerulean
 runtime: shiny
 ---
+
 ```{r setup, include=FALSE}
+library(shiny)
+library(flexdashboard)
 library(highcharter)
 library(dplyr)
 library(viridisLite)
 library(forecast)
 library(treemap)
 library(arules)
-library(flexdashboard)
+library(geojsonio)
+library(sf)
+library(leaflet)
+library(ggplot2)
+library(maps)
+
 
 thm <- 
   hc_theme(
@@ -28,88 +36,374 @@ thm <-
     )
   )
 
+france_map <- map_data("france")
+france_provinces <- unique(france_map$region)
+
+province_centers <- data.frame(name = character(), lat = numeric(), lon = numeric())
+
+for (province in france_provinces) {
+  province_data <- france_map[france_map$region == province, ]
+  lat_mean <- mean(province_data$lat)
+  lon_mean <- mean(province_data$long)
+  province_centers <- rbind(province_centers, data.frame(name = province, lat = lat_mean, lon = lon_mean))
+}
+
 ```
-
-Column {data-width=600}
------------------------------------------------------------------------
-
-### Sales Forecast
 
 ```{r}
-AirPassengers %>% 
-  forecast(level = 90) %>% 
-  hchart() %>% 
-  hc_add_theme(thm)
-```
+# data analysis
+library(tidyverse)
+library(lubridate)
+library(readxl)
+# read data
+arrival <- read.csv("railway_delays/Arrival.csv")
+delay <- read.csv("railway_delays/Delay.csv")
+departure <- read.csv("railway_delays/Departure.csv")
+select_gares <- read_excel("railway_delays/select_gares.xlsx")
 
-### Sales by State
+
+# Modify the column names of the arrival and departure datasets
+names(arrival) <- c("Origin", "Destination", "Train", "Number", "Date", "Scheduled_Arrival", "Real_Arrival", "Delay", "Cause", "Stops")
+names(departure) <- c("Origin", "Destination", "Train", "Number", "Date", "Scheduled_Departure", "Real_Departure", "Delay", "Cause", "Stops")
+
+# Modify the column names of the delay dataset
+names(delay) <- c("Date", "Origin", "Destination", "Real_Arrival", "Scheduled_Arrival", "Scheduled_Departure", "Delay", "cause")
+
+# Merge the arrival and departure datasets using the bind_rows() function
+all_trains <- bind_rows(arrival, departure)
+
+# Merge the delay table with the all_trains table using the left_join() function
+all_trains <- all_trains %>%
+  left_join(delay, by = c("Origin", "Destination", "Date"))
+
+# Merge Delay.x and Delay.y
+all_trains <- all_trains %>%
+  mutate(Delay = ifelse(is.na(Delay.x), Delay.y, Delay.x)) %>%
+  select(-Delay.x, -Delay.y, -cause)
+
+# Merge Real_Arrival.x and Real_Arrival.y
+all_trains <- all_trains %>%
+  mutate(Real_Arrival = ifelse(is.na(Real_Arrival.x), Real_Arrival.y, Real_Arrival.x)) %>%
+  select(-Real_Arrival.x, -Real_Arrival.y)
+
+# Merge Scheduled_Arrival.x and Scheduled_Arrival.y
+all_trains <- all_trains %>%
+  mutate(Scheduled_Arrival = ifelse(is.na(Scheduled_Arrival.x), Scheduled_Arrival.y, Scheduled_Arrival.x)) %>%
+  select(-Scheduled_Arrival.x, -Scheduled_Arrival.y)
+
+# Merge Scheduled_Departure.x and Scheduled_Departure.y
+all_trains <- all_trains %>%
+  mutate(Scheduled_Departure = ifelse(is.na(Scheduled_Departure.x), Scheduled_Departure.y, Scheduled_Departure.x)) %>%
+  select(-Scheduled_Departure.x, -Scheduled_Departure.y)
+
+```
 
 ```{r}
-data("USArrests", package = "datasets")
-data("usgeojson")
+##Data Analysis 2
+library(dplyr)
+library(tidyr)
+library(lubridate)
 
-USArrests <- USArrests %>%
-  mutate(state = rownames(.))
+# 1. Get unique Origin and Destination
 
-n <- 4
-colstops <- data.frame(
-  q = 0:n/n,
-  c = substring(viridis(n + 1), 0, 7)) %>%
-  list_parse2()
+origins_destinations <- all_trains %>%
+  mutate(Origin = trimws(Origin),
+         Destination = trimws(Destination)) %>%
+  select(Origin, Destination) %>%
+  gather() %>%
+  distinct(value) %>% 
+  filter(nchar(value) <= 50) %>% 
+  arrange(value) %>% 
+  pull(value)
 
-highchart() %>%
-  hc_add_series_map(usgeojson, USArrests, name = "Sales",
-                    value = "Murder", joinBy = c("woename", "state"),
-                    dataLabels = list(enabled = TRUE,
-                                      format = '{point.properties.postalcode}')) %>%
-  hc_colorAxis(stops = colstops) %>%
-  hc_legend(valueDecimals = 0, valueSuffix = "%") %>%
-  hc_mapNavigation(enabled = TRUE) %>%
-  hc_add_theme(thm)
+# 2. Get unique car models
+train_types <- unique(all_trains$Train)
+
+# 3. Summarize all the time involved into one hour and one hour, and get the non-repeated time points
+all_trains <- all_trains %>%
+  mutate(Scheduled_Arrival = as.POSIXct(Scheduled_Arrival, format = "%H:%M"),
+         Scheduled_Departure = as.POSIXct(Scheduled_Departure, format = "%H:%M"),
+         Scheduled_Arrival_hour = hour(Scheduled_Arrival),
+         Scheduled_Departure_hour = hour(Scheduled_Departure))
+
+hours <- sort(unique(c(all_trains$Scheduled_Arrival_hour, all_trains$Scheduled_Departure_hour)))
+
+# 4. Obtain the unique value of the number of passing stations
+all_trains <- all_trains %>%
+  mutate(Stops = sapply(strsplit(gsub("\\[|\\]|'|‘|’", "", Stops), split = ", "), length))
+
+stop_counts <- sort(unique(na.omit(all_trains$Stops)))
+
+
+new_data <- all_trains %>%
+  select(Scheduled_Arrival_hour, Stops, Train, Delay)
+
+# Rename the Scheduled_Arrival_hour column name to hour
+names(new_data)[names(new_data) == "Scheduled_Arrival_hour"] <- "hour"
+
+# Preprocess data
+new_data$IsDelayed <- as.factor(ifelse(new_data$Delay > 0, 1, 0))
+
+
 ```
 
-Column {.tabset data-width=400}
------------------------------------------------------------------------
 
-### Sales by Category
+Application
+=================
 
-```{r, fig.keep='none'}
-data("Groceries", package = "arules")
-dfitems <- tbl_df(Groceries@itemInfo)
+Row{data-height=40}
+----------------------------
 
-set.seed(10)
+### Parameters
 
-dfitemsg <- dfitems %>%
-  mutate(category = gsub(" ", "-", level1),
-         subcategory = gsub(" ", "-", level2)) %>%
-  group_by(category, subcategory) %>% 
-  summarise(sales = n() ^ 3 ) %>% 
-  ungroup() %>% 
-  sample_n(31)
-
-tm <- treemap(dfitemsg, index = c("category", "subcategory"),
-              vSize = "sales", vColor = "sales",
-              type = "value", palette = rev(viridis(6)))
-
-hctreemap(tm, allowDrillToNode = TRUE, layoutAlgorithm = "squarified") %>% 
-  hc_add_theme(thm)
-```
-
-### Best Sellers
 
 ```{r}
-set.seed(2)
 
-nprods <- 10
+        fluidRow(
+  column(4,
+    fluidRow(
+      column(6,
+        selectInput("departure_hour",
+                    label = "Departure time (hours)",
+                    choices = 0:24,
+                    selected = 0)
+      ),
+      column(6,
+        selectInput("departure_minute",
+                    label = "Departure time (minutes)",
+                    choices = 0:60,
+                    selected = 0)
+      ),
+      column(6,
+        selectInput("arrival_hour",
+                    label = "Arrival time (hours)",
+                    choices = 0:24,
+                    selected = 0)
+      ),
+      column(6,
+        selectInput("arrival_minute",
+                    label = "Arrival time (minutes)",
+                    choices = 0:60,
+                    selected = 0)
+      )
+    )
+  ),
+  column(4,
+    fluidRow(
+      column(6,
+        selectInput("train_type",
+                    label = "car model",
+                    choices = train_types,
+                    selected = "TGV")
+      ),
+      column(6,
+        selectInput("departure_region",
+            label = "departure area",
+            choices = province_centers$name,
+            selected = "Alsace")
+      ),
+      column(6,
+        selectInput("arrival_region",
+            label = "arrival area",
+            choices = province_centers$name,
+            selected = "Aquitaine")
+      ),
+      column(6,
+        selectInput("stops",
+                    label = "Stops",
+                    choices = 0:50,
+                    selected = 0)
+      )
+    )
+  )
+)
+```
 
-dfitems %>% 
-  sample_n(nprods) %>% 
-  .$labels %>% 
-  rep(times = sort(sample( 1e4:2e4, size = nprods), decreasing = TRUE)) %>% 
-  factor(levels = unique(.)) %>% 
-  hchart(showInLegend = FALSE, name = "Sales", pointWidth = 10) %>% 
-  hc_add_theme(thm) %>% 
-  hc_chart(type = "bar")
+
+```{r}
+# Machine Learning
+library(rpart)
+library(rpart.plot)
+# Preprocess data
+new_data$IsDelayed <- as.factor(ifelse(new_data$Delay > 0, 1, 0))
+
+# Fit the decision tree model and adjust the parameters
+tree_model <- rpart(IsDelayed ~ Stops + Train + hour, data = new_data, method = "class",
+                    control = rpart.control(minsplit = 1, maxdepth = 10, cp = 0.001))
+
+new_observation_and_prediction <- reactive({
+  new_observation <- data.frame(
+    Stops = as.numeric(input$stops),
+    Train = factor(input$train_type, levels = levels(new_data$Train)),
+    hour = input$arrival_hour
+  )
+
+  # Use the decision tree model to predict new observations
+  prediction_prob <- predict(tree_model, new_observation, type = "prob")
+
+  return(prediction_prob)
+})
+
+
+```
+
+Row{data-height=60}
+----------------------------
+
+
+### Attention
+
+```{r}
+
+output$prediction_result <- renderText({
+  prediction_prob <- new_observation_and_prediction()
+  paste("On time/Delay:", prediction_prob)
+})
+
+
+column(4,
+  tags$div(style = "height: 150px; overflow-y: auto;",
+    tags$p(paste("Late/Not Late:",textOutput("prediction_result"))),
+    tags$p("Historical delay time: average 0.25 minutes, maximum 120 minutes"),
+    tags$p("Please check the SNCF official website in time, the prediction accuracy rate of the official website is     ")
+  )
+)
+
+
+```
+
+### Map
+
+```{r}
+renderPlot({
+  ggplot(data = france_map) +
+    geom_polygon(aes(x = long, y = lat, group = group), fill = "white", color = "black") +
+    geom_point(data = province_centers[province_centers$name == input$departure_region, ],
+               aes(x = lon, y = lat), color = "green", size = 5) +
+    geom_point(data = province_centers[province_centers$name == input$arrival_region, ],
+               aes(x = lon, y = lat), color = "red", size = 5) +
+    coord_map("mercator") +
+    theme_void()
+})
+
+```
+
+Principe
+=================
+
+Row
+-------------------------------------
+
+
+
+### Delay - Data
+
+
+
+
+```{r}
+
+library(ggplot2)
+
+# 画出延迟的箱线图
+ggplot(all_trains, aes(x = 1, y = Delay)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of Delay",
+       x = "",
+       y = "Delay time (minutes)") +
+  theme(axis.text.x = element_blank())
+
+```
+
+
+
+### Delay - train
+
+
+```{r}
+library(ggplot2)
+library(shiny)
+
+# Analysis 2: Relationship between delay and train type
+delay_by_train_type <- all_trains %>%
+  group_by(Train) %>%
+  summarise(count = n(),
+            mean_delay = mean(Delay, na.rm = TRUE))
+
+# 可视化1
+plot_delay_by_train_type <- ggplot(delay_by_train_type, aes(x = Train, y = mean_delay)) +
+  geom_col() +
+  labs(title = "Average Delay Time vs. Train Type",
+       x = "train type",
+       y = "Average delay (minutes)") +
+  theme(axis.text.x = element_text(size = 8))
+
+# Shiny 应用程序布局
+fluidRow(
+  column(12,
+    tags$div(style = "height: 200px; overflow-y: auto;",
+             renderPlot(plot_delay_by_train_type)
+    )
+  )
+)
+
+
+```
+
+row
+----------------------------
+
+
+### Delay - Stop
+
+
+```{r}
+
+# 分析5: 延迟与沿途停靠站的关系
+delay_by_stops <- all_trains %>%
+  unnest(Stops) %>%   
+  group_by(Stops) %>%
+  summarise(count = n())
+
+# 可视化4
+ggplot(delay_by_stops, aes(x = Stops, y = count)) +
+  geom_col() +
+  labs(title = "The relationship between the average delay time and the stops along the way",
+       x = "Number of stops along the way",
+       y = "Average delay (minutes)")
+
+```
+
+
+### Delay - prediction
+
+
+```{r}
+      
+
+# 可视化决策树
+rpart.plot(tree_model, type = 3, box.palette = "RdBu", shadow.col = "gray", nn = TRUE)
   
 ```
 
+Analyse
+=================
+
+# 报告
+## 数据预处理
+### 数据分析
+
+### 数据合并
+
+### 数据清理
+
+### 数据分析
+
+## 可视化
+
+## Machine Learning
+
+### 预处理数据
+### 模型拟合和参数调整
+### 模型评估
+%MSE = (1/n) * sum((y_i - y_hat_i)^2)%
