@@ -147,6 +147,10 @@ new_data$IsDelayed <- as.factor(ifelse(new_data$Delay > 0, 1, 0))
 
 ```
 
+# Welcome
+![Image description](sncf.jpg){width=600 height=400}
+
+
 # Application
 
 ## Row {data-height="40"}
@@ -376,6 +380,18 @@ ggplot(delay_by_stops, aes(x = Stops, y = count)) +
 rpart.plot(tree_model, type = 3, box.palette = "RdBu", shadow.col = "gray", nn = TRUE)
   
 ```
+
+# Decision Tree
+
+```{r}
+
+# 可视化决策树
+rpart.plot(tree_model, type = 3, box.palette = "RdBu", shadow.col = "gray", nn = TRUE)
+```
+
+
+
+
 
 # Raport
 
