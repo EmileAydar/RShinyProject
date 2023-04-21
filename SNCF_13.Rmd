@@ -147,15 +147,11 @@ new_data$IsDelayed <- as.factor(ifelse(new_data$Delay > 0, 1, 0))
 
 ```
 
+# Application
 
-Application
-=================
-
-Row{data-height=40}
-----------------------------
+## Row {data-height="40"}
 
 ### Parameters
-
 
 ```{r}
 
@@ -219,7 +215,6 @@ Row{data-height=40}
 )
 ```
 
-
 ```{r}
 # Machine Learning
 library(rpart)
@@ -235,10 +230,10 @@ new_observation_and_prediction <- reactive({
   new_observation <- data.frame(
     Stops = as.numeric(input$stops),
     Train = factor(input$train_type, levels = levels(new_data$Train)),
-    hour = input$arrival_hour
+    hour = as.numeric(input$arrival_hour)
   )
 
-  # Use the decision tree model to predict new observations
+  # 使用决策树模型预测新观察结果
   prediction_prob <- predict(tree_model, new_observation, type = "prob")
 
   return(prediction_prob)
@@ -247,27 +242,37 @@ new_observation_and_prediction <- reactive({
 
 ```
 
-Row{data-height=60}
-----------------------------
-
+## Row {data-height="60"}
 
 ### Attention
 
 ```{r}
-
-output$prediction_result <- renderText({
+predicted_class <- reactive({
   prediction_prob <- new_observation_and_prediction()
-  paste("On time/Delay:", prediction_prob)
+  if (prediction_prob[1, "0"] > prediction_prob[1, "1"]) {
+    return("On time")
+  } else {
+    return("Delay")
+  }
 })
 
 
-column(4,
-  tags$div(style = "height: 150px; overflow-y: auto;",
-    tags$p(paste("Late/Not Late:",textOutput("prediction_result"))),
-    tags$p("Historical delay time: average 0.25 minutes, maximum 120 minutes"),
-    tags$p("Please check the SNCF official website in time, the prediction accuracy rate of the official website is     ")
-  )
-)
+output$prediction_result <- renderText({
+  prediction_prob <- new_observation_and_prediction()
+  if (prediction_prob[1, "0"] > prediction_prob[1, "1"]) {
+    predicted_result = "On time"
+    probability = prediction_prob[1, "0"]
+  } else {
+    predicted_result = "Delay"
+    probability = prediction_prob[1, "1"]
+  }
+  paste("Late/Not Late:", predicted_result, "with probability", round(probability * 100, 2), "%", "Historical delay time: average 0.25 minutes, maximum 120 minutes", "Please check the SNCF official website in time, the prediction accuracy rate of the official website is good")
+})
+
+textOutput("prediction_result")
+
+
+
 
 
 ```
@@ -275,31 +280,25 @@ column(4,
 ### Map
 
 ```{r}
-renderPlot({
-  ggplot(data = france_map) +
-    geom_polygon(aes(x = long, y = lat, group = group), fill = "white", color = "black") +
-    geom_point(data = province_centers[province_centers$name == input$departure_region, ],
-               aes(x = lon, y = lat), color = "green", size = 5) +
-    geom_point(data = province_centers[province_centers$name == input$arrival_region, ],
-               aes(x = lon, y = lat), color = "red", size = 5) +
-    coord_map("mercator") +
-    theme_void()
+library(plotly)
+renderPlotly({
+  plot_ly(data = france_map) %>%
+    add_polygons(x = ~long, y = ~lat, split = ~group, fillcolor = "white", line = list(color = "black")) %>%
+    add_markers(data = province_centers[province_centers$name == input$departure_region, ],
+                x = ~lon, y = ~lat, color = "green", size = 5) %>%
+    add_markers(data = province_centers[province_centers$name == input$arrival_region, ],
+                x = ~lon, y = ~lat, color = "red", size = 5) %>%
+    layout(geo = list(scope = 'france', projection = list(type = "mercator")))
 })
+
 
 ```
 
-Principe
-=================
+# Principe
 
-Row
--------------------------------------
-
-
+## Row
 
 ### Delay - Data
-
-
-
 
 ```{r}
 
@@ -315,10 +314,7 @@ ggplot(all_trains, aes(x = 1, y = Delay)) +
 
 ```
 
-
-
 ### Delay - train
-
 
 ```{r}
 library(ggplot2)
@@ -350,12 +346,9 @@ fluidRow(
 
 ```
 
-row
-----------------------------
-
+## row
 
 ### Delay - Stop
-
 
 ```{r}
 
@@ -374,9 +367,7 @@ ggplot(delay_by_stops, aes(x = Stops, y = count)) +
 
 ```
 
-
 ### Delay - prediction
-
 
 ```{r}
       
@@ -386,24 +377,101 @@ rpart.plot(tree_model, type = 3, box.palette = "RdBu", shadow.col = "gray", nn =
   
 ```
 
-Analyse
-=================
+# Raport
 
-# 报告
-## 数据预处理
-### 数据分析
+## Data Preprocessing
 
-### 数据合并
+### Data Reading
 
-### 数据清理
+-   First, we read and analyze the data from the four provided tables:
 
-### 数据分析
+    -   Arrival.csv: Contains information about trains arriving at the station, such as departure station, destination, train type, train number, date, actual arrival time, scheduled arrival time, delay time (minutes), delay reason, and intermediate stations.
 
-## 可视化
+    -   Delay.csv: Contains information about delayed trains, such as date, departure station, arrival station, actual arrival time, scheduled arrival time, scheduled departure time, delay time (minutes), and delay reason.
+
+    -   Departure.csv: Contains information about trains departing from the origin station, such as departure station, destination, train type, train number, date, actual departure time, scheduled departure time, delay time (minutes), delay reason, and intermediate stations.
+
+    -   select_gares.csv: Contains the names and corresponding UIC codes of selected stations.
+
+-   It can be seen that the content of each table is not entirely consistent, and even the definition of departure locations is inconsistent, such as "Gare" in Delay.csv and "Provence" in Arrival.csv. This makes our data analysis challenging.
+
+### Data Merging
+
+Based on the previous section's description, I performed the following data merges:：
+
+-   Since French contains special characters, I first rewrote all column names in English.
+
+-   I merged the similar Arrival.csv and Departure.csv files.
+
+-   I redefined the delay.csv file to achieve consistency, such as using "Origin" for departure location information.
+
+-   I used a left join to merge the data.
+
+### Data Cleaning
+
+I found that some data has little value and is challenging to utilize:
+
+-   Intermediate stations: We know all the station names, but since station names and city names often do not match (e.g., Gare de Lyon), I used the number of intermediate stations for analysis.
+
+-   The time of arrival and departure of trains in a day affects the lateness of trains, so when processing the data, I converted the time of train arrival and departure in a day into a standard format for analysis.
+
+### Data Analysis
+
+After processing and analyzing the data, I decided to study the following aspects:
+
+-   Delayed train statistics: Based on the Delay.csv dataset, we can calculate the number of delayed trains, average delay time, longest and shortest delay time, and delay time distribution. Moreover, we can analyze delays caused by different reasons.
+
+-   Relationship between delay and train type: We can use the Arrival.csv and Departure.csv datasets to group delayed trains by train type (e.g., TGV, TER, etc.) to understand which train types are more prone to delays.
+
+-   Relationship between delay and origin/destination: We can analyze which origin or destination trains are more prone to delays, determining if some stations' trains are more likely to be affected by delays.
+
+-   Relationship between delay and departure/arrival time: We can analyze the relationship between different times of day (e.g., morning, noon, evening, and night) and train delays to determine if trains during specific periods are more likely to be delayed.
+
+-   Relationship between delay and intermediate stations: We can analyze the relationship between the number of intermediate stations and train delays to determine if the number of stops affects train delays.
+
+-   Accuracy of delay prediction: By comparing the actual delay time and predicted delay time, we can evaluate the accuracy of SNCF's prediction system. We can calculate prediction accuracy, average prediction error, and other indicators.
+
+Among these, the first and last are purely historical data analyses. The others are factors influencing whether the train is late, paving the way for subsequent feature selection and decision tree machine learning.
+
+## Visualization
+
+### Page1
+
+This interface mainly consists of three parts:
+
+-   Selection of analytical factors: Departure and arrival time, departure and arrival stations, and the number of intermediate stations.
+
+
+-   Attention: Thanks to our machine learning model, based on the user-selected parameters, we can provide reasonable suggestions on whether the train will be late and the probability, the average and longest historical delay times to remind users, and an evaluation of the SNCF official prediction: it is highly valuable as a reference.
+
+-   Map: In this map, we can clearly see the distribution of departure and arrival locations. Unfortunately, due to the complex relationship between station names and city names and the difficulty of finding city latitude and longitude data online, I used the official latitude and longitude data for each province's central location.
+
+### Page2
+
+This interface mainly consists of four parts, focusing on the theoretical basis of the application of the first interface:
+
+-   Boxplot of historical delay data, showing a clear view of the mean and maximum values.
+
+-   Relationship between delay and train type, showing a significant influence of time.
+
+-   Relationship between delay and the number of intermediate stations.
+
+-   Visualization of the decision tree model.
 
 ## Machine Learning
 
-### 预处理数据
-### 模型拟合和参数调整
-### 模型评估
-%MSE = (1/n) * sum((y_i - y_hat_i)^2)%
+### Data Preprocessing
+
+After weighing the options, I finally selected hour, stops, and train type as the three features for decision tree analysis in machine learning.
+
+I converted the specific data of Delay into binary form to facilitate subsequent training.
+
+### Model Fitting and Parameter Adjustment
+
+I used the rpart library for simple decision tree analysis.
+
+### Model Evaluation
+
+I used Mean Squared Error (MSE) for model evaluation.
+
+%% MSE = (1/n) \* sum((y_i - y_hat_i)\^2) %%

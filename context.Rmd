@@ -55,7 +55,7 @@ all_trains <- all_trains %>%
   select(-Scheduled_Departure.x, -Scheduled_Departure.y)
 
 # 更新列名
-names(all_trains)
+all_trains
 ```
 
 ## 提取分析一下要做的事
@@ -126,15 +126,23 @@ total_delay
 
 ```{r}
 library(dplyr)
-
-# 计算预测时间的准确性
+# 确保时间格式正确
 all_trains <- all_trains %>%
-  mutate(Scheduled_Arrival = as.POSIXct(Scheduled_Arrival, format = "%H:%M:%S"),
-         Real_Arrival = as.POSIXct(Real_Arrival, format = "%H:%M:%S"),
-         Scheduled_Departure = as.POSIXct(Scheduled_Departure, format = "%H:%M:%S"))
+  mutate(Scheduled_Arrival = as.POSIXct(Scheduled_Arrival, format = "%Y-%m-%d %H:%M:%S"),
+         Real_Arrival = as.POSIXct(Real_Arrival, format = "%Y-%m-%d %H:%M:%S"),
+         Scheduled_Departure = as.POSIXct(Scheduled_Departure, format = "%Y-%m-%d %H:%M:%S"))
 
+# 计算到达时间和出发时间的绝对误差
+all_trains <- all_trains %>%
+  mutate(absolute_error_arrival = abs(as.numeric(difftime(Real_Arrival, Scheduled_Arrival, units = "mins"))),
+         absolute_error_departure = abs(as.numeric(difftime(Real_Arrival, Scheduled_Departure, units = "mins"))))
 
+# 删除无效或缺失的绝对误差值
+all_trains <- all_trains %>%
+  filter(!is.na(absolute_error_arrival) & !is.infinite(absolute_error_arrival) &
+           !is.na(absolute_error_departure) & !is.infinite(absolute_error_departure))
 
+# 计算到达时间和出发时间的平均绝对误差（MAE）
 mae_arrival <- mean(all_trains$absolute_error_arrival, na.rm = TRUE)
 mae_departure <- mean(all_trains$absolute_error_departure, na.rm = TRUE)
 
